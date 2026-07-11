@@ -1,0 +1,37 @@
+{
+  "name": "01_intro-to-express",
+  "version": "1.0.0",
+  "main": "app.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch --no-deprecation --env-file=.env app.js",
+    "start": "node  --no-deprecation --env-file=.env app.js",
+    "setup": "node --env-file=.env config/setup.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.864.0",
+    "@aws-sdk/s3-request-presigner": "^3.864.0",
+    "01_intro-to-express": "file:",
+    "bcrypt": "^5.1.1",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "express": "^4.22.2",
+    "express-mongo-sanitize": "^2.2.0",
+    "express-rate-limit": "^8.5.2",
+    "google-auth-library": "^9.15.1",
+    "helmet": "^8.2.0",
+    "hpp": "^0.2.3",
+    "mime-types": "^3.0.1",
+    "mongoose": "^8.12.1",
+    "redis": "^6.1.0",
+    "resend": "^6.17.1",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "prettier": "^3.4.2"
+  }
+}
