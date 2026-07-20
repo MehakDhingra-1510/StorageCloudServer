@@ -36,53 +36,65 @@ export const verifyOtp = async (req, res, next) => {
 
 export const loginWithGoogle = async (req, res, next) => {
   const { idToken } = req.body;
-  const userData = await verifyIdToken(idToken);
+
+  let userData;
+  try {
+    userData = await verifyIdToken(idToken);
+  } catch (err) {
+    return res.status(401).json({ error: "Invalid Google token." });
+  }
+
   const { name, picture } = userData;
   const email = userData.email.toLowerCase().trim();
-  const user = await User.findOne({ email }).select("-__v");
-  if (user) {
-    if (user.deleted) {
-      return res.status(403).json({
-        error: "Your account has been deleted. Contact app owner to recover.",
-      });
-    }
 
-    const allSessions = await redisClient.ft.search(
-      "userIdIdx",
-      `@userId:{${user.id}}`,
-      {
-        RETURN: [],
+  try {
+    const user = await User.findOne({ email }).select("-__v");
+    if (user) {
+      if (user.deleted) {
+        return res.status(403).json({
+          error: "Your account has been deleted. Contact app owner to recover.",
+        });
       }
-    );
 
-    if (allSessions.total >= 2) {
-      await redisClient.del(allSessions.documents[0].id);
+      const allSessions = await redisClient.ft.search(
+        "userIdIdx",
+        `@userId:{${user.id}}`,
+        {
+          RETURN: [],
+        }
+      );
+
+      if (allSessions.total >= 2) {
+        await redisClient.del(allSessions.documents[0].id);
+      }
+
+      if (!user.picture.includes("googleusercontent.com")) {
+        user.picture = picture;
+        await user.save();
+      }
+
+      const sessionId = crypto.randomUUID();
+      const redisKey = `session:${sessionId}`;
+      await redisClient.json.set(redisKey, "$", {
+        userId: user._id,
+        rootDirId: user.rootDirId,
+        role: user.role,
+        email: user.email,
+      });
+
+      const sessionExpiryTime = 60 * 1000 * 60 * 24 * 7;
+      await redisClient.expire(redisKey, sessionExpiryTime / 1000);
+
+      res.cookie("sid", sessionId, {
+        httpOnly: true,
+        signed: true,
+        maxAge: sessionExpiryTime,
+      });
+
+      return res.json({ message: "logged in" });
     }
-
-    if (!user.picture.includes("googleusercontent.com")) {
-      user.picture = picture;
-      await user.save();
-    }
-
-    const sessionId = crypto.randomUUID();
-    const redisKey = `session:${sessionId}`;
-    await redisClient.json.set(redisKey, "$", {
-      userId: user._id,
-      rootDirId: user.rootDirId,
-      role: user.role,
-      email: user.email,
-    });
-
-    const sessionExpiryTime = 60 * 1000 * 60 * 24 * 7;
-    await redisClient.expire(redisKey, sessionExpiryTime / 1000);
-
-    res.cookie("sid", sessionId, {
-      httpOnly: true,
-      signed: true,
-      maxAge: sessionExpiryTime,
-    });
-
-    return res.json({ message: "logged in" });
+  } catch (err) {
+    return next(err);
   }
 
   const mongooseSession = await mongoose.startSession();
