@@ -15,9 +15,13 @@ export const s3Client = new S3Client({
     sessionToken: process.env.AWS_SESSION_TOKEN,
   },
 });
+
+// Strip stray quotes so a value like '"mehak-storage"' in the env file
+// resolves to the real bucket name and not a literal quoted string.
+const BUCKET_NAME = process.env.AWS_BUCKET_NAME?.replace(/"/g, "");
 export const createUploadSignedUrl = async ({ key, contentType }) => {
   const command = new PutObjectCommand({
-    Bucket: process.env.AWS_BUCKET_NAME,
+    Bucket: BUCKET_NAME,
     Key: key,
     ContentType: contentType,
   });
@@ -36,7 +40,7 @@ export const createGetSignedUrl = async ({
   filename,
 }) => {
   const command = new GetObjectCommand({
-    Bucket: "mehak-storage",
+    Bucket: BUCKET_NAME,
     Key: key,
     ResponseContentDisposition: `${download ? "attachment" : "inline"}; filename=${encodeURIComponent(filename)}`,
   });
@@ -50,14 +54,14 @@ export const createGetSignedUrl = async ({
 export const deleteObject = async (key) => {
   await s3Client.send(
     new DeleteObjectCommand({
-      Bucket: process.env.AWS_BUCKET_NAME,
+      Bucket: BUCKET_NAME,
       Key: key,
     })
   );
 };
 export const getObjectMetadata = async (key) => {
   const command = new HeadObjectCommand({
-    Bucket: process.env.AWS_BUCKET_NAME,
+    Bucket: BUCKET_NAME,
     Key: key,
   });
 
