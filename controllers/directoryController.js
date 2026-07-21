@@ -22,7 +22,11 @@ export const getDirectory = async (req, res) => {
       .json({ error: "Directory not found or you do not have access to it!" });
   }
 
-  const files = await File.find({ parentDirId: directoryData._id, deleted: false }).lean();
+  const files = await File.find({
+    parentDirId: directoryData._id,
+    deleted: false,
+    isUploading: { $ne: true },
+  }).lean();
   const directories = await Directory.find({ parentDirId: _id, deleted: false }).lean();
   return res.status(200).json({
     ...directoryData,
@@ -273,7 +277,12 @@ export const searchDirectory = async (req, res, next) => {
     // every file/folder the user owns, at any depth, not just the folder
     // currently open in the UI.
     const [files, directories] = await Promise.all([
-      File.find({ userId: req.user._id, deleted: false, name: nameMatch }).lean(),
+      File.find({
+        userId: req.user._id,
+        deleted: false,
+        isUploading: { $ne: true },
+        name: nameMatch,
+      }).lean(),
       Directory.find({
         userId: req.user._id,
         deleted: false,
