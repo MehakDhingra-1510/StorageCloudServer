@@ -5,6 +5,7 @@ import Directory from "../models/directoryModel.js";
 import { verifyIdToken } from "../services/googleAuthService.js";
 import { sendOtpService } from "../services/sendOtpService.js";
 import redisClient from "../config/redis.js";
+import { SESSION_COOKIE_OPTIONS } from "../config/cookieOptions.js";
 import { otpSchema } from "../validators/authSchema.js";
 
 export const sendOtp = async (req, res, next) => {
@@ -77,7 +78,7 @@ export const loginWithGoogle = async (req, res, next) => {
     await redisClient.expire(redisKey, sessionExpiryTime / 1000);
 
     res.cookie("sid", sessionId, {
-      httpOnly: true,
+      ...SESSION_COOKIE_OPTIONS,
       signed: true,
       maxAge: sessionExpiryTime,
     });
@@ -127,7 +128,7 @@ export const loginWithGoogle = async (req, res, next) => {
     await redisClient.expire(redisKey, sessionExpiryTime / 1000);
 
     res.cookie("sid", sessionId, {
-      httpOnly: true,
+      ...SESSION_COOKIE_OPTIONS,
       signed: true,
       maxAge: sessionExpiryTime,
     });

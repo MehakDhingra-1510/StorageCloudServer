@@ -3,6 +3,7 @@ import User from "../models/userModel.js";
 import mongoose, { Types } from "mongoose";
 import OTP from "../models/otpModel.js";
 import redisClient from "../config/redis.js";
+import { SESSION_COOKIE_OPTIONS } from "../config/cookieOptions.js";
 import { z } from "zod/v4";
 import { loginSchema, registerSchema } from "../validators/authSchema.js";
 
@@ -124,9 +125,8 @@ export const login = async (req, res, next) => {
   await redisClient.expire(redisKey, sessionExpiryTime / 1000);
 
   res.cookie("sid", sessionId, {
-    httpOnly: true,
+    ...SESSION_COOKIE_OPTIONS,
     signed: true,
-    sameSite: "lax",
     maxAge: sessionExpiryTime,
   });
   res.json({ message: "logged in" });
@@ -173,7 +173,7 @@ export const getCurrentUser = async (req, res) => {
 export const logout = async (req, res) => {
   const { sid } = req.signedCookies;
   await redisClient.del(`session:${sid}`);
-  res.clearCookie("sid");
+  res.clearCookie("sid", SESSION_COOKIE_OPTIONS);
   res.status(204).end();
 };
 
