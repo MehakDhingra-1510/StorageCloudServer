@@ -37,7 +37,6 @@ export const verifyOtp = async (req, res, next) => {
 
 export const loginWithGoogle = async (req, res, next) => {
   const { idToken } = req.body;
-
   let userData;
   try {
     userData = await verifyIdToken(idToken);
@@ -50,6 +49,7 @@ export const loginWithGoogle = async (req, res, next) => {
 
   try {
     const user = await User.findOne({ email }).select("-__v");
+
     if (user) {
       if (user.deleted) {
         return res.status(403).json({
@@ -95,89 +95,62 @@ export const loginWithGoogle = async (req, res, next) => {
       return res.json({ message: "logged in" });
     }
 
-    if (!user.picture.includes("googleusercontent.com")) {
-      user.picture = picture;
-      await user.save();
+    const mongooseSession = await mongoose.startSession();
+
+    try {
+      const rootDirId = new Types.ObjectId();
+      const userId = new Types.ObjectId();
+
+      mongooseSession.startTransaction();
+
+      await Directory.insertOne(
+        {
+          _id: rootDirId,
+          name: `root-${email}`,
+          parentDirId: null,
+          userId,
+        },
+        { session: mongooseSession }
+      );
+
+      await User.insertOne(
+        {
+          _id: userId,
+          name,
+          email,
+          picture,
+          rootDirId,
+        },
+        { session: mongooseSession }
+      );
+
+      const sessionId = crypto.randomUUID();
+      const redisKey = `session:${sessionId}`;
+      await redisClient.json.set(redisKey, "$", {
+        userId,
+        rootDirId,
+        role: "User",
+        email,
+      });
+
+      const sessionExpiryTime = 60 * 1000 * 60 * 24 * 7;
+      await redisClient.expire(redisKey, sessionExpiryTime / 1000);
+
+      res.cookie("sid", sessionId, {
+        ...SESSION_COOKIE_OPTIONS,
+        signed: true,
+        maxAge: sessionExpiryTime,
+      });
+
+      await mongooseSession.commitTransaction();
+      return res.status(201).json({ message: "account created and logged in" });
+    } catch (err) {
+      await mongooseSession.abortTransaction();
+      next(err);
+    } finally {
+      mongooseSession.endSession();
     }
-
-    const sessionId = crypto.randomUUID();
-    const redisKey = `session:${sessionId}`;
-    await redisClient.json.set(redisKey, "$", {
-      userId: user._id,
-      rootDirId: user.rootDirId,
-      role: user.role,
-      email: user.email,
-    });
-
-    const sessionExpiryTime = 60 * 1000 * 60 * 24 * 7;
-    await redisClient.expire(redisKey, sessionExpiryTime / 1000);
-
-    res.cookie("sid", sessionId, {
-      ...SESSION_COOKIE_OPTIONS,
-      signed: true,
-      maxAge: sessionExpiryTime,
-    });
-
-    return res.json({ message: "logged in" });
   } catch (err) {
     return next(err);
-  }
-
-  const mongooseSession = await mongoose.startSession();
-
-  try {
-    const rootDirId = new Types.ObjectId();
-    const userId = new Types.ObjectId();
-
-    mongooseSession.startTransaction();
-
-    await Directory.insertOne(
-      {
-        _id: rootDirId,
-        name: `root-${email}`,
-        parentDirId: null,
-        userId,
-      },
-      { session: mongooseSession }
-    );
-
-    await User.insertOne(
-      {
-        _id: userId,
-        name,
-        email,
-        picture,
-        rootDirId,
-      },
-      { session: mongooseSession }
-    );
-
-    const sessionId = crypto.randomUUID();
-    const redisKey = `session:${sessionId}`;
-    await redisClient.json.set(redisKey, "$", {
-      userId: userId,
-      rootDirId: rootDirId,
-      role: "User",
-      email,
-    });
-
-    const sessionExpiryTime = 60 * 1000 * 60 * 24 * 7;
-    await redisClient.expire(redisKey, sessionExpiryTime / 1000);
-
-    res.cookie("sid", sessionId, {
-      ...SESSION_COOKIE_OPTIONS,
-      signed: true,
-      sameSite: "none",
-      secure: true,
-      maxAge: sessionExpiryTime,
-    });
-
-    await mongooseSession.commitTransaction();
-    res.status(201).json({ message: "account created and logged in" });
-  } catch (err) {
-    await mongooseSession.abortTransaction();
-    next(err);
-  } finally {
-    mongooseSession.endSession();
   }
 };
