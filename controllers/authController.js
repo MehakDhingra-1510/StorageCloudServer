@@ -5,6 +5,7 @@ import Directory from "../models/directoryModel.js";
 import { verifyIdToken } from "../services/googleAuthService.js";
 import { sendOtpService } from "../services/sendOtpService.js";
 import redisClient from "../config/redis.js";
+import { SESSION_COOKIE_OPTIONS } from "../config/cookieOptions.js";
 import { otpSchema } from "../validators/authSchema.js";
 
 export const sendOtp = async (req, res, next) => {
@@ -86,15 +87,38 @@ export const loginWithGoogle = async (req, res, next) => {
       await redisClient.expire(redisKey, sessionExpiryTime / 1000);
 
       res.cookie("sid", sessionId, {
-        httpOnly: true,
+        ...SESSION_COOKIE_OPTIONS,
         signed: true,
-        sameSite: "none",
-        secure: true,
         maxAge: sessionExpiryTime,
       });
 
       return res.json({ message: "logged in" });
     }
+
+    if (!user.picture.includes("googleusercontent.com")) {
+      user.picture = picture;
+      await user.save();
+    }
+
+    const sessionId = crypto.randomUUID();
+    const redisKey = `session:${sessionId}`;
+    await redisClient.json.set(redisKey, "$", {
+      userId: user._id,
+      rootDirId: user.rootDirId,
+      role: user.role,
+      email: user.email,
+    });
+
+    const sessionExpiryTime = 60 * 1000 * 60 * 24 * 7;
+    await redisClient.expire(redisKey, sessionExpiryTime / 1000);
+
+    res.cookie("sid", sessionId, {
+      ...SESSION_COOKIE_OPTIONS,
+      signed: true,
+      maxAge: sessionExpiryTime,
+    });
+
+    return res.json({ message: "logged in" });
   } catch (err) {
     return next(err);
   }
@@ -141,7 +165,7 @@ export const loginWithGoogle = async (req, res, next) => {
     await redisClient.expire(redisKey, sessionExpiryTime / 1000);
 
     res.cookie("sid", sessionId, {
-      httpOnly: true,
+      ...SESSION_COOKIE_OPTIONS,
       signed: true,
       sameSite: "none",
       secure: true,
