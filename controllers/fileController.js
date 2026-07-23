@@ -1,4 +1,3 @@
-
 import path from "path";
 import Directory from "../models/directoryModel.js";
 import File from "../models/fileModel.js";
@@ -8,9 +7,15 @@ import { getEffectiveRole, roleSatisfies } from "../utils/permissions.js";
 
 export async function updateDirectoriesSize(parentId, deltaSize) {
   while (parentId) {
-    const dir = await Directory.findById(parentId);
-    dir.size += deltaSize;
-    await dir.save();
+    // $inc is applied atomically by MongoDB itself, so two concurrent calls
+    // (e.g. two uploads finishing at the same time) can never overwrite
+    // each other the way a find -> mutate in JS -> save() would.
+    const dir = await Directory.findByIdAndUpdate(
+      parentId,
+      { $inc: { size: deltaSize } },
+      { select: "parentDirId" }
+    );
+    if (!dir) break;
     parentId = dir.parentDirId;
   }
 }
