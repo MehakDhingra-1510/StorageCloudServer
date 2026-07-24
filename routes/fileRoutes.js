@@ -3,6 +3,7 @@ import validateIdMiddleware from "../middlewares/validateIdMiddleware.js";
 import {
   deleteFile,
   getFile,
+  moveFile,
   permanentlyDeleteFile,
   renameFile,
   restoreFile,
@@ -22,6 +23,7 @@ router.get("/:id", getFile);
 
 router.patch("/:id", renameFile);
 router.patch("/:id/restore", restoreFile);
+router.patch("/:id/move", moveFile);
 
 router.delete("/:id", deleteFile);
 router.delete("/:id/permanent", permanentlyDeleteFile);

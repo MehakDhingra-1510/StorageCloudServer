@@ -5,6 +5,7 @@ import {
   createDirectory,
   deleteDirectory,
   getDirectory,
+  moveDirectory,
   permanentlyDeleteDirectory,
   renameDirectory,
   restoreDirectory,
@@ -24,6 +25,7 @@ router.post("/:parentDirId?", createDirectory);
 
 router.patch("/:id", renameDirectory);
 router.patch("/:id/restore", restoreDirectory);
+router.patch("/:id/move", moveDirectory);
 
 router.delete("/:id", deleteDirectory);
 router.delete("/:id/permanent", permanentlyDeleteDirectory);

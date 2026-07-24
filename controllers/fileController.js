@@ -20,6 +20,55 @@ export async function updateDirectoriesSize(parentId, deltaSize) {
   }
 }
 
+export const moveFile = async (req, res, next) => {
+  const { id } = req.params;
+  const { newParentDirId } = req.body;
+
+  if (!newParentDirId) {
+    return res.status(400).json({ error: "newParentDirId is required" });
+  }
+
+  // Need edit access to the file itself...
+  const fileRole = await getEffectiveRole("file", id, req.user);
+  if (!roleSatisfies(fileRole, "editor")) {
+    return res.status(404).json({ error: "File not found!" });
+  }
+
+  // ...and edit access to the destination folder.
+  const destRole = await getEffectiveRole("directory", newParentDirId, req.user);
+  if (!roleSatisfies(destRole, "editor")) {
+    return res.status(404).json({ error: "Destination folder not found!" });
+  }
+
+  try {
+    const file = await File.findOne({ _id: id, deleted: false });
+    if (!file) {
+      return res.status(404).json({ error: "File not found!" });
+    }
+
+    const destination = await Directory.findOne({ _id: newParentDirId, deleted: false });
+    if (!destination) {
+      return res.status(404).json({ error: "Destination folder not found!" });
+    }
+
+    if (file.parentDirId.toString() === newParentDirId.toString()) {
+      return res.status(200).json({ message: "File is already in that folder" });
+    }
+
+    const oldParentDirId = file.parentDirId;
+    file.parentDirId = newParentDirId;
+    await file.save();
+
+    // Move the file's size off the old folder chain and onto the new one.
+    await updateDirectoriesSize(oldParentDirId, -file.size);
+    await updateDirectoriesSize(newParentDirId, file.size);
+
+    return res.status(200).json({ message: "File moved" });
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const getFile = async (req, res) => {
   const { id } = req.params;
 

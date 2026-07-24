@@ -257,6 +257,80 @@ export const permanentlyDeleteDirectory = async (req, res, next) => {
   return res.json({ message: "Directory permanently deleted" });
 };
 
+export const moveDirectory = async (req, res, next) => {
+  const { id } = req.params;
+  const { newParentDirId } = req.body;
+
+  if (!newParentDirId) {
+    return res.status(400).json({ error: "newParentDirId is required" });
+  }
+
+  if (newParentDirId.toString() === id.toString()) {
+    return res.status(400).json({ error: "Cannot move a folder into itself" });
+  }
+
+  const dirRole = await getEffectiveRole("directory", id, req.user);
+  if (!roleSatisfies(dirRole, "editor")) {
+    return res.status(404).json({ error: "Directory not found!" });
+  }
+
+  const destRole = await getEffectiveRole("directory", newParentDirId, req.user);
+  if (!roleSatisfies(destRole, "editor")) {
+    return res.status(404).json({ error: "Destination folder not found!" });
+  }
+
+  try {
+    const directory = await Directory.findOne({ _id: id, deleted: false });
+    if (!directory) {
+      return res.status(404).json({ error: "Directory not found!" });
+    }
+
+    const destination = await Directory.findOne({ _id: newParentDirId, deleted: false });
+    if (!destination) {
+      return res.status(404).json({ error: "Destination folder not found!" });
+    }
+
+    // Prevent creating a cycle: the destination can't be a descendant of
+    // the folder being moved (moving a folder "into" one of its own
+    // subfolders would make it its own ancestor).
+    if (await isSameOrDescendant(newParentDirId, id)) {
+      return res.status(400).json({ error: "Cannot move a folder into one of its own subfolders" });
+    }
+
+    if (directory.parentDirId?.toString() === newParentDirId.toString()) {
+      return res.status(200).json({ message: "Folder is already in that location" });
+    }
+
+    const oldParentDirId = directory.parentDirId;
+    directory.parentDirId = newParentDirId;
+    await directory.save();
+
+    await updateDirectoriesSize(oldParentDirId, -directory.size);
+    await updateDirectoriesSize(newParentDirId, directory.size);
+
+    return res.status(200).json({ message: "Directory moved" });
+  } catch (err) {
+    return next(err);
+  }
+};
+
+// True if candidateId is targetId itself, or lives anywhere inside it —
+// i.e. walking up candidateId's ancestor chain reaches targetId.
+async function isSameOrDescendant(candidateId, targetId) {
+  const targetStr = targetId.toString();
+  let currentId = candidateId.toString();
+
+  if (currentId === targetStr) return true;
+
+  while (currentId) {
+    const current = await Directory.findById(currentId).select("parentDirId").lean();
+    if (!current || !current.parentDirId) return false;
+    currentId = current.parentDirId.toString();
+    if (currentId === targetStr) return true;
+  }
+  return false;
+}
+
 // Escapes regex special characters so a literal search term like "3.5 (final)"
 // doesn't get interpreted as a regex pattern (or throw on invalid patterns).
 function escapeRegex(str) {
@@ -325,4 +399,4 @@ export const searchDirectory = async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-};
+};
