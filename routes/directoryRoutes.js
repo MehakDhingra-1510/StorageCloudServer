@@ -4,6 +4,7 @@ import validateIdMiddleware from "../middlewares/validateIdMiddleware.js";
 import {
   createDirectory,
   deleteDirectory,
+  emptyTrash,
   getDirectory,
   moveDirectory,
   permanentlyDeleteDirectory,
@@ -19,6 +20,7 @@ router.param("parentDirId", validateIdMiddleware);
 router.param("id", validateIdMiddleware);
 router.get("/search/items", searchDirectory);
 router.get("/trash/items", getTrash);
+router.delete("/trash/empty", emptyTrash);
 router.get("/:id?", getDirectory);
 
 router.post("/:parentDirId?", createDirectory);

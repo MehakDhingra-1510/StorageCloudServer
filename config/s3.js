@@ -6,6 +6,7 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import mime from "mime-types";
 
 export const s3Client = new S3Client({
   region: process.env.AWS_REGION,
@@ -39,10 +40,20 @@ export const createGetSignedUrl = async ({
   download = false,
   filename,
 }) => {
+  // Previously this relied entirely on whatever Content-Type was stored on
+  // the S3 object at upload time (which came from the browser's File.type —
+  // often blank or wrong for .txt/.csv/etc depending on OS/browser). That
+  // made preview flaky: a wrong/missing content type causes the browser to
+  // download the file instead of rendering it inline in an <img>/<iframe>.
+  // Deriving it here from the extension is deterministic and always correct
+  // for preview, independent of what got sent at upload time.
+  const contentType = mime.lookup(key) || "application/octet-stream";
+
   const command = new GetObjectCommand({
     Bucket: BUCKET_NAME,
     Key: key,
     ResponseContentDisposition: `${download ? "attachment" : "inline"}; filename=${encodeURIComponent(filename)}`,
+    ResponseContentType: contentType,
   });
 
   const url = await getSignedUrl(s3Client, command, {

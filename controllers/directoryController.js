@@ -3,6 +3,7 @@ import File from "../models/fileModel.js";
 import { updateDirectoriesSize } from "./fileController.js";
 import { deleteObject } from "../config/s3.js";
 import { getEffectiveRole, roleSatisfies } from "../utils/permissions.js";
+import { getAncestorChain } from "../utils/directoryTree.js";
 
 export const getDirectory = async (req, res) => {
   const user = req.user;
@@ -28,13 +29,29 @@ export const getDirectory = async (req, res) => {
     isUploading: { $ne: true },
   }).lean();
   const directories = await Directory.find({ parentDirId: _id, deleted: false }).lean();
+  const breadCrumb = await buildBreadCrumb(directoryData);
   return res.status(200).json({
     ...directoryData,
     role,
     files: files.map((dir) => ({ ...dir, id: dir._id })),
     directories: directories.map((dir) => ({ ...dir, id: dir._id })),
+    breadCrumb,
   });
 };
+
+// Returns [root, ..., directory] — the shape Breadcrumb.jsx expects. This
+// previously didn't exist at all: getDirectory never sent a breadCrumb
+// field, so the client's `breadCrumb.length === 0` check made <Breadcrumb />
+// render null on every page, even though the component itself was fine.
+async function buildBreadCrumb(directory) {
+  const ancestors = await getAncestorChain(directory.parentDirId);
+  // ancestors is closest-first (parent, grandparent, ..., root) — reverse to
+  // get root-first for display, then append the current directory.
+  return [
+    ...ancestors.reverse().map((a) => ({ _id: a._id.toString(), name: a.name })),
+    { _id: directory._id.toString(), name: directory.name },
+  ];
+}
 
 export const createDirectory = async (req, res, next) => {
   const user = req.user;
@@ -255,6 +272,58 @@ export const permanentlyDeleteDirectory = async (req, res, next) => {
     return next(err);
   }
   return res.json({ message: "Directory permanently deleted" });
+};
+
+// Permanently deletes everything currently in the user's trash in one shot.
+// Previously the only way to reclaim quota from trashed items was
+// permanently deleting them one at a time from the UI — there was no bulk
+// endpoint at all.
+export const emptyTrash = async (req, res, next) => {
+  try {
+    const [trashedFiles, trashedDirectories] = await Promise.all([
+      File.find({ userId: req.user._id, deleted: true }).lean(),
+      Directory.find({ userId: req.user._id, deleted: true }).lean(),
+    ]);
+
+    if (trashedFiles.length === 0 && trashedDirectories.length === 0) {
+      return res.json({ message: "Trash is already empty" });
+    }
+
+    const trashedDirIds = new Set(trashedDirectories.map((d) => d._id.toString()));
+
+    // Only decrement quota once per independent deleted subtree — a
+    // directory's `size` already includes everything nested inside it, so
+    // we only subtract at the "top" of each trashed subtree (where the
+    // parent is NOT itself in the trash), same principle as the existing
+    // single-item permanentlyDelete* endpoints.
+    const isTopLevel = (parentDirId) =>
+      !parentDirId || !trashedDirIds.has(parentDirId.toString());
+
+    const topLevelDirs = trashedDirectories.filter((d) => isTopLevel(d.parentDirId));
+    const topLevelFiles = trashedFiles.filter((f) => isTopLevel(f.parentDirId));
+
+    await Promise.all([
+      ...topLevelDirs.map((d) => updateDirectoriesSize(d.parentDirId, -d.size)),
+      ...topLevelFiles.map((f) => updateDirectoriesSize(f.parentDirId, -f.size)),
+    ]);
+
+    // Every trashed file has a real S3 object, regardless of nesting depth —
+    // those all need deleting individually.
+    await Promise.all(
+      trashedFiles.map(({ _id, extension }) => deleteObject(`${_id.toString()}${extension}`))
+    );
+
+    await File.deleteMany({ userId: req.user._id, deleted: true });
+    await Directory.deleteMany({ userId: req.user._id, deleted: true });
+
+    return res.json({
+      message: "Trash emptied",
+      filesDeleted: trashedFiles.length,
+      directoriesDeleted: trashedDirectories.length,
+    });
+  } catch (err) {
+    return next(err);
+  }
 };
 
 export const moveDirectory = async (req, res, next) => {

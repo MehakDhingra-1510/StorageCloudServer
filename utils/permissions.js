@@ -2,6 +2,7 @@ import File from "../models/fileModel.js";
 import Directory from "../models/directoryModel.js";
 import Share from "../models/shareModel.js";
 import User from "../models/userModel.js";
+import { getAncestorChain } from "./directoryTree.js";
 
 const ROLE_RANK = { viewer: 1, editor: 2, owner: 3 };
 
@@ -54,23 +55,37 @@ export async function getEffectiveRole(resourceType, resourceId, user) {
 
   // Walk up the directory tree — a share on any ancestor folder grants
   // the same access to everything nested inside it.
-  let parentDirId = resource.parentDirId;
-  while (parentDirId) {
-    const ancestorShare = await Share.findOne({
+  //
+  // Previously this was one Directory.findById() + one Share.findOne() PER
+  // ancestor level, in a while loop — an N+1 query pattern run on nearly
+  // every file/directory request. getAncestorChain() now fetches the whole
+  // chain in a single aggregation query, and we batch-fetch shares for all
+  // of those ancestors in one more query, so this is now 2 queries total
+  // regardless of nesting depth instead of up to 2*depth.
+  const ancestors = await getAncestorChain(resource.parentDirId);
+  if (ancestors.length) {
+    const ancestorShares = await Share.find({
       resourceType: "directory",
-      resourceId: parentDirId,
+      resourceId: { $in: ancestors.map((a) => a._id) },
       sharedWithEmail: normalizedEmail,
     })
-      .select("role")
+      .select("resourceId role")
       .lean();
 
-    if (ancestorShare) {
-      role = higherRole(role, ancestorShare.role);
-      break; // closest applicable ancestor share wins; no need to go further
-    }
+    const shareByAncestorId = new Map(
+      ancestorShares.map((s) => [s.resourceId.toString(), s.role])
+    );
 
-    const parentDir = await Directory.findById(parentDirId).select("parentDirId").lean();
-    parentDirId = parentDir ? parentDir.parentDirId : null;
+    // ancestors[] is ordered closest-first (immediate parent, then
+    // grandparent, ...), so the first match found here is the closest
+    // applicable ancestor share — same "closest wins" semantics as before.
+    for (const ancestor of ancestors) {
+      const ancestorRole = shareByAncestorId.get(ancestor._id.toString());
+      if (ancestorRole) {
+        role = higherRole(role, ancestorRole);
+        break;
+      }
+    }
   }
 
   return role;
