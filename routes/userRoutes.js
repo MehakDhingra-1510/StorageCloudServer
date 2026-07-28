@@ -12,7 +12,9 @@ import {
   logoutAll,
   logoutById,
   register,
+  updateUserRole,
 } from "../controllers/userController.js";
+import validateIdMiddleware from "../middlewares/validateIdMiddleware.js";
 
 const router = express.Router();
 
@@ -26,6 +28,10 @@ router.post("/user/logout", logout);
 router.post("/user/logout-all", logoutAll);
 
 router.get("/users", checkAuth, checkNotRegularUser, getAllUsers);
+
+router.param("userId", validateIdMiddleware);
+
+router.patch("/users/:userId/role", checkAuth, checkIsAdminUser, updateUserRole);
 
 router.post(
   "/users/:userId/logout",

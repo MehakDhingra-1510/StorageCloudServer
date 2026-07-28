@@ -3,7 +3,7 @@ import Directory from "../models/directoryModel.js";
 import File from "../models/fileModel.js";
 import User from "../models/userModel.js";
 import { createGetSignedUrl, createUploadSignedUrl, deleteObject, getObjectMetadata } from "../config/s3.js";
-import { getEffectiveRole, roleSatisfies } from "../utils/permissions.js";
+import { getEffectiveRole, getAccessibleTrashItems, roleSatisfies, shareAccessOptions } from "../utils/permissions.js";
 
 export async function updateDirectoriesSize(parentId, deltaSize) {
   while (parentId) {
@@ -29,13 +29,13 @@ export const moveFile = async (req, res, next) => {
   }
 
   // Need edit access to the file itself...
-  const fileRole = await getEffectiveRole("file", id, req.user);
+  const fileRole = await getEffectiveRole("file", id, req.user, shareAccessOptions(req));
   if (!roleSatisfies(fileRole, "editor")) {
     return res.status(404).json({ error: "File not found!" });
   }
 
   // ...and edit access to the destination folder.
-  const destRole = await getEffectiveRole("directory", newParentDirId, req.user);
+  const destRole = await getEffectiveRole("directory", newParentDirId, req.user, shareAccessOptions(req));
   if (!roleSatisfies(destRole, "editor")) {
     return res.status(404).json({ error: "Destination folder not found!" });
   }
@@ -73,7 +73,7 @@ export const getFile = async (req, res) => {
   const { id } = req.params;
 
   // Owner OR a user this file/its parent folder has been shared with (viewer+).
-  const role = await getEffectiveRole("file", id, req.user);
+  const role = await getEffectiveRole("file", id, req.user, shareAccessOptions(req));
   if (!roleSatisfies(role, "viewer")) {
     return res.status(404).json({ error: "File not found!" });
   }
@@ -105,7 +105,7 @@ export const renameFile = async (req, res, next) => {
   const { id } = req.params;
 
   // Owner OR editor (via share) can rename; viewers cannot.
-  const role = await getEffectiveRole("file", id, req.user);
+  const role = await getEffectiveRole("file", id, req.user, shareAccessOptions(req));
   if (!roleSatisfies(role, "editor")) {
     return res.status(404).json({ error: "File not found!" });
   }
@@ -128,9 +128,15 @@ export const renameFile = async (req, res, next) => {
 
 export const deleteFile = async (req, res, next) => {
   const { id } = req.params;
+
+  // Owner OR editor (via share) can delete; viewers cannot.
+  const role = await getEffectiveRole("file", id, req.user, shareAccessOptions(req));
+  if (!roleSatisfies(role, "editor")) {
+    return res.status(404).json({ error: "File not found!" });
+  }
+
   const file = await File.findOne({
     _id: id,
-    userId: req.user._id,
     deleted: false,
   });
 
@@ -150,9 +156,15 @@ export const deleteFile = async (req, res, next) => {
 
 export const restoreFile = async (req, res, next) => {
   const { id } = req.params;
+
+  // Owner OR editor (via share) can restore; viewers cannot.
+  const role = await getEffectiveRole("file", id, req.user, shareAccessOptions(req));
+  if (!roleSatisfies(role, "editor")) {
+    return res.status(404).json({ error: "File not found in trash!" });
+  }
+
   const file = await File.findOne({
     _id: id,
-    userId: req.user._id,
     deleted: true,
   });
 
@@ -172,9 +184,15 @@ export const restoreFile = async (req, res, next) => {
 
 export const permanentlyDeleteFile = async (req, res, next) => {
   const { id } = req.params;
+
+  // Owner OR editor (via share) can permanently delete; viewers cannot.
+  const role = await getEffectiveRole("file", id, req.user, shareAccessOptions(req));
+  if (!roleSatisfies(role, "editor")) {
+    return res.status(404).json({ error: "File not found in trash!" });
+  }
+
   const file = await File.findOne({
     _id: id,
-    userId: req.user._id,
     deleted: true,
   });
 
@@ -194,10 +212,7 @@ export const permanentlyDeleteFile = async (req, res, next) => {
 
 export const getTrash = async (req, res, next) => {
   try {
-    const [files, directories] = await Promise.all([
-      File.find({ userId: req.user._id, deleted: true }).lean(),
-      Directory.find({ userId: req.user._id, deleted: true }).lean(),
-    ]);
+    const { files, directories } = await getAccessibleTrashItems(req.user);
 
     return res.json({
       files: files.map((file) => ({ ...file, id: file._id.toString() })),
@@ -208,15 +223,19 @@ export const getTrash = async (req, res, next) => {
   }
 };
 
-export const uploadInitiate = async (req, res) => {
+export const uploadInitiate = async (req, res, next) => {
   const parentDirId = req.body.parentDirId || req.user.rootDirId;
   try {
+    const role = await getEffectiveRole("directory", parentDirId, req.user, shareAccessOptions(req));
+    if (!roleSatisfies(role, "editor")) {
+      return res.status(404).json({ error: "Parent directory not found!" });
+    }
+
     const parentDirData = await Directory.findOne({
       _id: parentDirId,
-      userId: req.user._id,
+      deleted: false,
     });
 
-    // Check if parent directory exists
     if (!parentDirData) {
       return res.status(404).json({ error: "Parent directory not found!" });
     }
@@ -224,13 +243,13 @@ export const uploadInitiate = async (req, res) => {
     const filename = req.body.name || "untitled";
     const filesize = req.body.size;
 
-    const user = await User.findById(req.user._id);
-    const rootDir = await Directory.findById(req.user.rootDirId);
+    // Quota is enforced against the drive owner, not the uploader.
+    const owner = await User.findById(parentDirData.userId);
+    const ownerRootDir = await Directory.findById(owner.rootDirId);
 
-    const remainingSpace = user.maxStorageInBytes - rootDir.size;
+    const remainingSpace = owner.maxStorageInBytes - ownerRootDir.size;
 
     if (filesize > remainingSpace) {
-      console.log("File too large");
       return res.status(507).json({ error: "Not enough storage." });
     }
 
@@ -240,7 +259,7 @@ export const uploadInitiate = async (req, res) => {
       name: filename,
       size: filesize,
       parentDirId: parentDirData._id,
-      userId: req.user._id,
+      userId: parentDirData.userId,
       isUploading: true,
     });
     const uploadSignedUrl = await createUploadSignedUrl({
@@ -249,7 +268,7 @@ export const uploadInitiate = async (req, res) => {
     });
     res.json({ uploadSignedUrl, fileId: insertedFile.id });
   } catch (err) {
-    console.log(err);
+    next(err);
   }
 };
 
@@ -257,15 +276,17 @@ export const uploadComplete = async (req, res, next) => {
   try {
     const { fileId } = req.body;
 
-    const file = await File.findOne({
-      _id: fileId,
-      userId: req.user._id,
-    });
+    const file = await File.findOne({ _id: fileId });
 
     if (!file) {
       return res.status(404).json({
         error: "File not found",
       });
+    }
+
+    const role = await getEffectiveRole("directory", file.parentDirId, req.user, shareAccessOptions(req));
+    if (!roleSatisfies(role, "editor")) {
+      return res.status(404).json({ error: "File not found" });
     }
 
     if (!file.isUploading) {

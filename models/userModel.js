@@ -44,8 +44,6 @@ const userSchema = new Schema(
     maxStorageInBytes: {
       type: Number,
       required: true,
-      // Keep this in sync with the "10 GB free on signup" copy in Home.jsx —
-      // this was previously 1GB, silently contradicting the marketing page.
       default: 10 * 1024 ** 3,
     },
     deleted: {

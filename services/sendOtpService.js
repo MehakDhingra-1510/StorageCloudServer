@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { Resend } from "resend";
 import OTP from "../models/otpModel.js";
 
@@ -5,7 +6,7 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 
 export async function sendOtpService(rawEmail) {
   const email = rawEmail.toLowerCase().trim();
-  const otp = Math.floor(1000 + Math.random() * 9000).toString();
+  const otp = crypto.randomInt(1000, 10000).toString();
 
   // Upsert OTP (replace if it already exists)
   await OTP.findOneAndUpdate(

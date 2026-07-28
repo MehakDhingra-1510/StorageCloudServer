@@ -142,6 +142,8 @@ export const accessSharedLink = async (req, res, next) => {
         resourceType: "file",
         name: file.name,
         role: share.role,
+        shareToken: share.token,
+        resourceId: file._id.toString(),
         url: fileUrl,
       });
     }
@@ -159,6 +161,8 @@ export const accessSharedLink = async (req, res, next) => {
       resourceType: "directory",
       name: directory.name,
       role: share.role,
+      shareToken: share.token,
+      resourceId: directory._id.toString(),
       files: files.map((f) => ({ ...f, id: f._id.toString() })),
       directories: directories.map((d) => ({ ...d, id: d._id.toString() })),
     });

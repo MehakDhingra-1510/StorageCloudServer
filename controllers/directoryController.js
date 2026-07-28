@@ -2,14 +2,14 @@ import Directory from "../models/directoryModel.js";
 import File from "../models/fileModel.js";
 import { updateDirectoriesSize } from "./fileController.js";
 import { deleteObject } from "../config/s3.js";
-import { getEffectiveRole, roleSatisfies } from "../utils/permissions.js";
-import { getAncestorChain } from "../utils/directoryTree.js";
+import { getEffectiveRole, getAccessibleTrashItems, roleSatisfies, shareAccessOptions } from "../utils/permissions.js";
 
 export const getDirectory = async (req, res) => {
   const user = req.user;
   const _id = req.params.id || user.rootDirId.toString();
 
-  const role = await getEffectiveRole("directory", _id, user);
+  const access = shareAccessOptions(req);
+  const role = await getEffectiveRole("directory", _id, user, access);
   if (!roleSatisfies(role, "viewer")) {
     return res
       .status(404)
@@ -29,29 +29,31 @@ export const getDirectory = async (req, res) => {
     isUploading: { $ne: true },
   }).lean();
   const directories = await Directory.find({ parentDirId: _id, deleted: false }).lean();
-  const breadCrumb = await buildBreadCrumb(directoryData);
+
+  // Walk parentDirId up to the root, collecting each ancestor's _id/name,
+  // then reverse so the array reads root -> ... -> current directory, which
+  // is the shape the client's Breadcrumb component expects in data.breadCrumb.
+  const breadCrumb = [{ _id: directoryData._id, name: directoryData.name }];
+  let currentParentId = directoryData.parentDirId;
+  while (currentParentId) {
+    const ancestor = await Directory.findById(currentParentId)
+      .select("name parentDirId")
+      .lean();
+    if (!ancestor) break;
+    breadCrumb.push({ _id: ancestor._id, name: ancestor.name });
+    currentParentId = ancestor.parentDirId;
+  }
+  breadCrumb.reverse();
+  if (breadCrumb.length) breadCrumb[0].name = "My Drive";
+
   return res.status(200).json({
     ...directoryData,
     role,
+    breadCrumb,
     files: files.map((dir) => ({ ...dir, id: dir._id })),
     directories: directories.map((dir) => ({ ...dir, id: dir._id })),
-    breadCrumb,
   });
 };
-
-// Returns [root, ..., directory] — the shape Breadcrumb.jsx expects. This
-// previously didn't exist at all: getDirectory never sent a breadCrumb
-// field, so the client's `breadCrumb.length === 0` check made <Breadcrumb />
-// render null on every page, even though the component itself was fine.
-async function buildBreadCrumb(directory) {
-  const ancestors = await getAncestorChain(directory.parentDirId);
-  // ancestors is closest-first (parent, grandparent, ..., root) — reverse to
-  // get root-first for display, then append the current directory.
-  return [
-    ...ancestors.reverse().map((a) => ({ _id: a._id.toString(), name: a.name })),
-    { _id: directory._id.toString(), name: directory.name },
-  ];
-}
 
 export const createDirectory = async (req, res, next) => {
   const user = req.user;
@@ -59,7 +61,8 @@ export const createDirectory = async (req, res, next) => {
   const parentDirId = req.params.parentDirId || user.rootDirId.toString();
   const dirname = req.headers.dirname || "New Folder";
 
-  const role = await getEffectiveRole("directory", parentDirId, user);
+  const access = shareAccessOptions(req);
+  const role = await getEffectiveRole("directory", parentDirId, user, access);
   if (!roleSatisfies(role, "editor")) {
     return res.status(404).json({ message: "Parent Directory Does not exist!" });
   }
@@ -77,7 +80,7 @@ export const createDirectory = async (req, res, next) => {
     await Directory.insertOne({
       name: dirname,
       parentDirId,
-      userId: user._id,
+      userId: parentDir.userId,
     });
 
     return res.status(201).json({ message: "Directory Created!" });
@@ -96,7 +99,7 @@ export const renameDirectory = async (req, res, next) => {
   const { id } = req.params;
   const { newDirName } = req.body;
 
-  const role = await getEffectiveRole("directory", id, req.user);
+  const role = await getEffectiveRole("directory", id, req.user, shareAccessOptions(req));
   if (!roleSatisfies(role, "editor")) {
     return res.status(404).json({ error: "Directory not found!" });
   }
@@ -115,10 +118,15 @@ export const renameDirectory = async (req, res, next) => {
 export const deleteDirectory = async (req, res, next) => {
   const { id } = req.params;
 
+  // Owner OR editor (via share) can delete; viewers cannot.
+  const role = await getEffectiveRole("directory", id, req.user, shareAccessOptions(req));
+  if (!roleSatisfies(role, "editor")) {
+    return res.status(404).json({ error: "Directory not found!" });
+  }
+
   try {
     const directoryData = await Directory.findOne({
       _id: id,
-      userId: req.user._id,
       deleted: false,
     }).lean();
 
@@ -171,10 +179,16 @@ export const deleteDirectory = async (req, res, next) => {
 
 export const restoreDirectory = async (req, res, next) => {
   const { id } = req.params;
+
+  // Owner OR editor (via share) can restore; viewers cannot.
+  const role = await getEffectiveRole("directory", id, req.user, shareAccessOptions(req));
+  if (!roleSatisfies(role, "editor")) {
+    return res.status(404).json({ error: "Directory not found in trash!" });
+  }
+
   try {
     const directoryData = await Directory.findOne({
       _id: id,
-      userId: req.user._id,
       deleted: true,
     }).lean();
 
@@ -222,10 +236,15 @@ export const restoreDirectory = async (req, res, next) => {
 export const permanentlyDeleteDirectory = async (req, res, next) => {
   const { id } = req.params;
 
+  // Owner OR editor (via share) can permanently delete; viewers cannot.
+  const role = await getEffectiveRole("directory", id, req.user, shareAccessOptions(req));
+  if (!roleSatisfies(role, "editor")) {
+    return res.status(404).json({ error: "Directory not found in trash!" });
+  }
+
   try {
     const directoryData = await Directory.findOne({
       _id: id,
-      userId: req.user._id,
       deleted: true,
     }).lean();
 
@@ -274,16 +293,10 @@ export const permanentlyDeleteDirectory = async (req, res, next) => {
   return res.json({ message: "Directory permanently deleted" });
 };
 
-// Permanently deletes everything currently in the user's trash in one shot.
-// Previously the only way to reclaim quota from trashed items was
-// permanently deleting them one at a time from the UI — there was no bulk
-// endpoint at all.
 export const emptyTrash = async (req, res, next) => {
   try {
-    const [trashedFiles, trashedDirectories] = await Promise.all([
-      File.find({ userId: req.user._id, deleted: true }).lean(),
-      Directory.find({ userId: req.user._id, deleted: true }).lean(),
-    ]);
+    const { files: trashedFiles, directories: trashedDirectories } =
+      await getAccessibleTrashItems(req.user);
 
     if (trashedFiles.length === 0 && trashedDirectories.length === 0) {
       return res.json({ message: "Trash is already empty" });
@@ -291,11 +304,6 @@ export const emptyTrash = async (req, res, next) => {
 
     const trashedDirIds = new Set(trashedDirectories.map((d) => d._id.toString()));
 
-    // Only decrement quota once per independent deleted subtree — a
-    // directory's `size` already includes everything nested inside it, so
-    // we only subtract at the "top" of each trashed subtree (where the
-    // parent is NOT itself in the trash), same principle as the existing
-    // single-item permanentlyDelete* endpoints.
     const isTopLevel = (parentDirId) =>
       !parentDirId || !trashedDirIds.has(parentDirId.toString());
 
@@ -307,14 +315,12 @@ export const emptyTrash = async (req, res, next) => {
       ...topLevelFiles.map((f) => updateDirectoriesSize(f.parentDirId, -f.size)),
     ]);
 
-    // Every trashed file has a real S3 object, regardless of nesting depth —
-    // those all need deleting individually.
     await Promise.all(
       trashedFiles.map(({ _id, extension }) => deleteObject(`${_id.toString()}${extension}`))
     );
 
-    await File.deleteMany({ userId: req.user._id, deleted: true });
-    await Directory.deleteMany({ userId: req.user._id, deleted: true });
+    await File.deleteMany({ _id: { $in: trashedFiles.map((f) => f._id) } });
+    await Directory.deleteMany({ _id: { $in: trashedDirectories.map((d) => d._id) } });
 
     return res.json({
       message: "Trash emptied",
@@ -338,12 +344,12 @@ export const moveDirectory = async (req, res, next) => {
     return res.status(400).json({ error: "Cannot move a folder into itself" });
   }
 
-  const dirRole = await getEffectiveRole("directory", id, req.user);
+  const dirRole = await getEffectiveRole("directory", id, req.user, shareAccessOptions(req));
   if (!roleSatisfies(dirRole, "editor")) {
     return res.status(404).json({ error: "Directory not found!" });
   }
 
-  const destRole = await getEffectiveRole("directory", newParentDirId, req.user);
+  const destRole = await getEffectiveRole("directory", newParentDirId, req.user, shareAccessOptions(req));
   if (!roleSatisfies(destRole, "editor")) {
     return res.status(404).json({ error: "Destination folder not found!" });
   }
@@ -416,23 +422,58 @@ export const searchDirectory = async (req, res, next) => {
 
     const nameMatch = { $regex: escapeRegex(query), $options: "i" };
 
-    // No parentDirId filter on either query — this intentionally searches
-    // every file/folder the user owns, at any depth, not just the folder
-    // currently open in the UI.
-    const [files, directories] = await Promise.all([
-      File.find({
-        userId: req.user._id,
-        deleted: false,
-        isUploading: { $ne: true },
-        name: nameMatch,
-      }).lean(),
-      Directory.find({
-        userId: req.user._id,
-        deleted: false,
-        parentDirId: { $ne: null }, // exclude the user's own root directory from results
-        name: nameMatch,
-      }).lean(),
-    ]);
+    const [ownedFiles, ownedDirectories, candidateFiles, candidateDirectories] =
+      await Promise.all([
+        File.find({
+          userId: req.user._id,
+          deleted: false,
+          isUploading: { $ne: true },
+          name: nameMatch,
+        }).lean(),
+        Directory.find({
+          userId: req.user._id,
+          deleted: false,
+          parentDirId: { $ne: null },
+          name: nameMatch,
+        }).lean(),
+        File.find({
+          userId: { $ne: req.user._id },
+          deleted: false,
+          isUploading: { $ne: true },
+          name: nameMatch,
+        }).lean(),
+        Directory.find({
+          userId: { $ne: req.user._id },
+          deleted: false,
+          parentDirId: { $ne: null },
+          name: nameMatch,
+        }).lean(),
+      ]);
+
+    const files = [...ownedFiles];
+    const directories = [...ownedDirectories];
+    const seenFileIds = new Set(ownedFiles.map((f) => f._id.toString()));
+    const seenDirIds = new Set(ownedDirectories.map((d) => d._id.toString()));
+
+    for (const file of candidateFiles) {
+      const id = file._id.toString();
+      if (seenFileIds.has(id)) continue;
+      const role = await getEffectiveRole("file", file._id, req.user, shareAccessOptions(req));
+      if (roleSatisfies(role, "viewer")) {
+        files.push(file);
+        seenFileIds.add(id);
+      }
+    }
+
+    for (const dir of candidateDirectories) {
+      const id = dir._id.toString();
+      if (seenDirIds.has(id)) continue;
+      const role = await getEffectiveRole("directory", dir._id, req.user, shareAccessOptions(req));
+      if (roleSatisfies(role, "viewer")) {
+        directories.push(dir);
+        seenDirIds.add(id);
+      }
+    }
 
     // Resolve each match's immediate parent folder name so results from
     // different parts of the drive can be told apart in the UI.

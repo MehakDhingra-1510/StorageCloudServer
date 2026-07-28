@@ -8,6 +8,7 @@ import userRoutes from "./routes/userRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import shareRoutes from "./routes/shareRoutes.js";
 import checkAuth from "./middlewares/authMiddleware.js";
+import attachShareToken from "./middlewares/shareTokenMiddleware.js";
 import {
   apiLimiter,
   authLimiter,
@@ -45,8 +46,8 @@ app.use("/auth", authLimiter);
 app.use("/user/login", authLimiter);
 app.use("/user/register", authLimiter);
 
-app.use("/directory", checkAuth, directoryRoutes);
-app.use("/file", checkAuth, fileRoutes);
+app.use("/directory", checkAuth, attachShareToken, directoryRoutes);
+app.use("/file", checkAuth, attachShareToken, fileRoutes);
 app.use("/", userRoutes);
 app.use("/auth", authRoutes);
 app.use("/share", shareRoutes);

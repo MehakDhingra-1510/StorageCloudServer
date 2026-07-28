@@ -17,9 +17,6 @@ export const sendOtp = async (req, res, next) => {
 export const verifyOtp = async (req, res, next) => {
   const { success, data } = otpSchema.safeParse(req.body);
 
-  console.log(req.body);
-  console.log(data);
-
   if (!success) {
     return res.status(400).json({ error: "Invalid OTP" });
   }
@@ -32,6 +29,10 @@ export const verifyOtp = async (req, res, next) => {
     return res.status(400).json({ error: "Invalid or Expired OTP!" });
   }
 
+  // Note: intentionally not deleted here — verifyOtp is a pre-check the
+  // client uses to unlock the rest of the registration form; the final
+  // register() call re-submits this same OTP and is what actually
+  // consumes/deletes it. Deleting it here would make register() fail.
   return res.json({ message: "OTP Verified!" });
 };
 

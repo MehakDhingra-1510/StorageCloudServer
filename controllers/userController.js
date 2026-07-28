@@ -6,6 +6,11 @@ import redisClient from "../config/redis.js";
 import { SESSION_COOKIE_OPTIONS } from "../config/cookieOptions.js";
 import { z } from "zod/v4";
 import { loginSchema, registerSchema } from "../validators/authSchema.js";
+import { invalidateUserSessions } from "../utils/sessionUtils.js";
+
+const updateRoleSchema = z.object({
+  role: z.enum(["Admin", "Manager", "User"]),
+});
 
 export const register = async (req, res, next) => {
   const { success, data, error } = registerSchema.safeParse(req.body);
@@ -16,7 +21,6 @@ export const register = async (req, res, next) => {
 
   const { name, password, otp } = data;
   const email = data.email.toLowerCase().trim();
-  console.log(otp);
   const otpRecord = await OTP.findOne({ email, otp });
 
   if (!otpRecord) {
@@ -90,7 +94,7 @@ export const login = async (req, res, next) => {
   const { email, password } = data;
 
   try {
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    const user = await User.findOne({ email: email.toLowerCase().trim(), deleted: false });
 
     if (!user) {
       return res.status(404).json({ error: "Invalid Credentials" });
@@ -136,9 +140,8 @@ export const login = async (req, res, next) => {
     await redisClient.expire(redisKey, sessionExpiryTime / 1000);
 
     res.cookie("sid", sessionId, {
-      httpOnly: true,
+      ...SESSION_COOKIE_OPTIONS,
       signed: true,
-      sameSite: "lax",
       maxAge: sessionExpiryTime,
     });
     res.json({ message: "logged in" });
@@ -166,10 +169,11 @@ export const getAllUsers = async (req, res) => {
     ).then((ids) => ids.filter(Boolean))
   );
 
-  const transformedUsers = allUsers.map(({ _id, name, email }) => ({
+  const transformedUsers = allUsers.map(({ _id, name, email, role }) => ({
     id: _id,
     name,
     email,
+    role,
     isLoggedIn: loggedInUserIds.has(_id.toString()),
   }));
   res.status(200).json(transformedUsers);
@@ -198,14 +202,7 @@ export const logout = async (req, res) => {
 export const logoutById = async (req, res, next) => {
   try {
     const { userId } = req.params;
-    const allSessions = await redisClient.ft.search(
-      "userIdIdx",
-      `@userId:{${userId}}`,
-      { RETURN: [] }
-    );
-    if (allSessions.total > 0) {
-      await redisClient.del(allSessions.documents.map(({ id }) => id));
-    }
+    await invalidateUserSessions(userId);
     res.status(204).end();
   } catch (err) {
     next(err);
@@ -232,16 +229,51 @@ export const deleteUser = async (req, res, next) => {
     return res.status(403).json({ error: "You can not delete yourself." });
   }
   try {
-    const allSessions = await redisClient.ft.search(
-      "userIdIdx",
-      `@userId:{${userId}}`,
-      { RETURN: [] }
-    );
-    if (allSessions.total > 0) {
-      await redisClient.del(allSessions.documents.map(({ id }) => id));
+    const user = await User.findOne({ _id: userId, deleted: false });
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
     }
+
+    await invalidateUserSessions(userId);
     await User.findByIdAndUpdate(userId, { deleted: true });
     res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateUserRole = async (req, res, next) => {
+  const { userId } = req.params;
+  const { success, data, error } = updateRoleSchema.safeParse(req.body);
+
+  if (!success) {
+    return res.status(400).json({ error: z.flattenError(error).fieldErrors });
+  }
+
+  if (req.user._id.toString() === userId) {
+    return res.status(403).json({ error: "You can not change your own role." });
+  }
+
+  try {
+    const user = await User.findOne({ _id: userId, deleted: false });
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    if (user.role === data.role) {
+      return res.json({ id: user._id, email: user.email, role: user.role });
+    }
+
+    user.role = data.role;
+    await user.save();
+    await invalidateUserSessions(userId);
+
+    return res.json({
+      id: user._id,
+      email: user.email,
+      role: user.role,
+      message: "Role updated. The user must log in again.",
+    });
   } catch (err) {
     next(err);
   }
